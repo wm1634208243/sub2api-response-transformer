@@ -1,0 +1,17 @@
+services:
+  response-transformer:
+    build: .
+    image: sub2api-response-transformer:local
+    container_name: sub2api-response-transformer
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./config.json:/etc/transformer/config.json
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

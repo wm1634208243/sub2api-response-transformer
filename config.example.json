@@ -1,0 +1,41 @@
+{
+  "listen": "127.0.0.1:8888",
+  "upstream": "http://127.0.0.1:1203",
+  "health_path": "/transformer/health",
+  "stats_path": "/transformer/stats",
+  "admin_path": "/transformer/admin",
+  "admin_token": "",
+  "max_inspect_body_bytes": 1048576,
+  "preserve_host": false,
+  "emit_debug_header": false,
+  "rules": [
+    {
+      "name": "restore-451",
+      "url_path_prefixes": ["/v1/"],
+      "url_path_contains": [],
+      "upstream_statuses": [500],
+      "json_paths": ["code", "error.code", "data.code"],
+      "values": ["451"],
+      "message_paths": ["message", "error.message", "data.message"],
+      "message_contains": [],
+      "body_contains": [],
+      "case_insensitive": false,
+      "downstream_status": 451,
+      "response_template": ""
+    },
+    {
+      "name": "restore-400",
+      "url_path_prefixes": ["/v1/"],
+      "url_path_contains": [],
+      "upstream_statuses": [500],
+      "json_paths": ["code", "error.code", "data.code"],
+      "values": ["400"],
+      "message_paths": ["message", "error.message", "data.message"],
+      "message_contains": [],
+      "body_contains": [],
+      "case_insensitive": false,
+      "downstream_status": 400,
+      "response_template": ""
+    }
+  ]
+}

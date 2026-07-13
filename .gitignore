@@ -1,0 +1,14 @@
+# Local runtime configuration and credentials
+config.json
+config.local.json
+
+# Local build and test artifacts
+.gocache/
+transformer
+transformer-preview.exe
+*.exe
+*.log
+
+# Agent and editor state
+.agents/
+.codex/
