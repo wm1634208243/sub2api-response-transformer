@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -18,16 +19,30 @@ const (
 )
 
 type Config struct {
-	Listen              string `json:"listen"`
-	Upstream            string `json:"upstream"`
-	HealthPath          string `json:"health_path"`
-	StatsPath           string `json:"stats_path"`
-	AdminPath           string `json:"admin_path"`
-	AdminToken          string `json:"admin_token"`
-	MaxInspectBodyBytes int64  `json:"max_inspect_body_bytes"`
-	PreserveHost        bool   `json:"preserve_host"`
-	EmitDebugHeader     bool   `json:"emit_debug_header"`
-	Rules               []Rule `json:"rules"`
+	Listen                 string                  `json:"listen"`
+	Upstream               string                  `json:"upstream"`
+	HealthPath             string                  `json:"health_path"`
+	StatsPath              string                  `json:"stats_path"`
+	AdminPath              string                  `json:"admin_path"`
+	AdminToken             string                  `json:"admin_token"`
+	MaxInspectBodyBytes    int64                   `json:"max_inspect_body_bytes"`
+	PreserveHost           bool                    `json:"preserve_host"`
+	EmitDebugHeader        bool                    `json:"emit_debug_header"`
+	RequestValidationRules []RequestValidationRule `json:"request_validation_rules,omitempty"`
+	Rules                  []Rule                  `json:"rules"`
+}
+
+type RequestValidationRule struct {
+	Name             string   `json:"name"`
+	URLPathPrefixes  []string `json:"url_path_prefixes"`
+	URLPathContains  []string `json:"url_path_contains"`
+	Methods          []string `json:"methods"`
+	JSONPath         string   `json:"json_path"`
+	AllowedValues    []string `json:"allowed_values"`
+	Required         bool     `json:"required"`
+	CaseInsensitive  bool     `json:"case_insensitive"`
+	DownstreamStatus int      `json:"downstream_status"`
+	ResponseBody     string   `json:"response_body"`
 }
 
 type Rule struct {
@@ -47,9 +62,16 @@ type Rule struct {
 
 type compiledConfig struct {
 	Config
-	target          *url.URL
-	inspectStatuses map[int]struct{}
-	rules           []compiledRule
+	target                 *url.URL
+	inspectStatuses        map[int]struct{}
+	requestValidationRules []compiledRequestValidationRule
+	rules                  []compiledRule
+}
+
+type compiledRequestValidationRule struct {
+	RequestValidationRule
+	methodSet  map[string]struct{}
+	allowedSet map[string]struct{}
 }
 
 type compiledRule struct {
@@ -109,10 +131,19 @@ func compileConfig(cfg Config) (*compiledConfig, error) {
 	}
 
 	cc := &compiledConfig{
-		Config:          cfg,
-		target:          target,
-		inspectStatuses: make(map[int]struct{}),
-		rules:           make([]compiledRule, 0, len(cfg.Rules)),
+		Config:                 cfg,
+		target:                 target,
+		inspectStatuses:        make(map[int]struct{}),
+		requestValidationRules: make([]compiledRequestValidationRule, 0, len(cfg.RequestValidationRules)),
+		rules:                  make([]compiledRule, 0, len(cfg.Rules)),
+	}
+
+	for i, rule := range cfg.RequestValidationRules {
+		cr, err := compileRequestValidationRule(rule)
+		if err != nil {
+			return nil, fmt.Errorf("request validation rule %d: %w", i, err)
+		}
+		cc.requestValidationRules = append(cc.requestValidationRules, cr)
 	}
 
 	for i, rule := range cfg.Rules {
@@ -127,6 +158,62 @@ func compileConfig(cfg Config) (*compiledConfig, error) {
 	}
 
 	return cc, nil
+}
+
+func compileRequestValidationRule(rule RequestValidationRule) (compiledRequestValidationRule, error) {
+	if strings.TrimSpace(rule.Name) == "" {
+		return compiledRequestValidationRule{}, fmt.Errorf("name is required")
+	}
+	if len(rule.URLPathPrefixes) == 0 && len(rule.URLPathContains) == 0 {
+		return compiledRequestValidationRule{}, fmt.Errorf("at least one URL match condition is required")
+	}
+	if strings.TrimSpace(rule.JSONPath) == "" {
+		return compiledRequestValidationRule{}, fmt.Errorf("json_path is required")
+	}
+	if len(rule.AllowedValues) == 0 {
+		return compiledRequestValidationRule{}, fmt.Errorf("allowed_values is required")
+	}
+	if len(rule.Methods) == 0 {
+		rule.Methods = []string{"POST"}
+	}
+	if rule.DownstreamStatus == 0 {
+		rule.DownstreamStatus = http.StatusBadRequest
+	}
+	if rule.DownstreamStatus < 400 || rule.DownstreamStatus > 599 {
+		return compiledRequestValidationRule{}, fmt.Errorf("downstream_status must be between 400 and 599")
+	}
+	if strings.TrimSpace(rule.ResponseBody) == "" {
+		rule.ResponseBody = `{"error":{"code":400,"message":"request validation failed","status":"INVALID_ARGUMENT"}}`
+	}
+	if !json.Valid([]byte(rule.ResponseBody)) {
+		return compiledRequestValidationRule{}, fmt.Errorf("response_body must be valid JSON")
+	}
+
+	cr := compiledRequestValidationRule{
+		RequestValidationRule: rule,
+		methodSet:             make(map[string]struct{}, len(rule.Methods)),
+		allowedSet:            make(map[string]struct{}, len(rule.AllowedValues)),
+	}
+	for _, method := range rule.Methods {
+		method = strings.ToUpper(strings.TrimSpace(method))
+		if method == "" {
+			continue
+		}
+		cr.methodSet[method] = struct{}{}
+	}
+	if len(cr.methodSet) == 0 {
+		return compiledRequestValidationRule{}, fmt.Errorf("methods must contain at least one HTTP method")
+	}
+	for _, value := range rule.AllowedValues {
+		if rule.CaseInsensitive {
+			value = strings.ToLower(value)
+		}
+		cr.allowedSet[value] = struct{}{}
+	}
+	if len(cr.allowedSet) == 0 {
+		return compiledRequestValidationRule{}, fmt.Errorf("allowed_values must contain at least one value")
+	}
+	return cr, nil
 }
 
 func compileRule(rule Rule) (compiledRule, error) {

@@ -123,6 +123,30 @@ docker compose logs --tail=100 response-transformer
 /transformer/stats
 ```
 
+## 请求参数校验
+
+`request_validation_rules` 在请求转发到 Sub2API 前检查 JSON 标量字段。字段不存在且 `required` 为 `false` 时继续透传；字段存在但不在允许列表时，直接返回配置的状态码和 JSON Body。
+
+```json
+"request_validation_rules": [
+  {
+    "name": "validate-image-aspect-ratio",
+    "url_path_prefixes": ["/v1beta/models"],
+    "url_path_contains": [],
+    "methods": ["POST"],
+    "json_path": "generationConfig.imageConfig.aspectRatio",
+    "allowed_values": ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"],
+    "required": false,
+    "case_insensitive": false,
+    "downstream_status": 400,
+    "response_body": "{\"error\":{\"code\":400,\"message\":\"invalid aspect ratio\",\"status\":\"INVALID_ARGUMENT\"}}"
+  }
+]
+```
+
+请求校验规则按配置顺序执行。只读取路径和方法命中的请求，最大检查大小复用 `max_inspect_body_bytes`；超过限制或请求不是合法 JSON 时交给 Sub2API 处理。启用 `emit_debug_header` 后，被拒绝的请求会返回 `X-Request-Rejected: <rule-name>`。
+
+
 ## 规则说明
 
 规则数组为 `rules`。规则从上到下匹配，**第一条命中后立即停止**，因此具体规则应该排在通用规则前面。
@@ -233,7 +257,7 @@ curl -fsS http://127.0.0.1:8888/transformer/health
 curl -fsS http://127.0.0.1:8888/transformer/stats
 ```
 
-统计字段：`requests`、`inspected_responses`、`transformed_responses`、`skipped_body_too_large`、`skipped_content_encoding` 和 `proxy_errors`。
+统计字段：`requests`、`inspected_requests`、`rejected_requests`、`skipped_request_too_large`、`inspected_responses`、`transformed_responses`、`skipped_body_too_large`、`skipped_content_encoding` 和 `proxy_errors`。
 
 ## 安全建议
 

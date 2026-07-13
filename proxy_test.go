@@ -333,6 +333,107 @@ func TestProxyIntegration(t *testing.T) {
 	}
 }
 
+func imageAspectRatioValidationRule() RequestValidationRule {
+	return RequestValidationRule{
+		Name:            "validate-image-aspect-ratio",
+		URLPathPrefixes: []string{"/v1beta/models"},
+		Methods:         []string{http.MethodPost},
+		JSONPath:        "generationConfig.imageConfig.aspectRatio",
+		AllowedValues: []string{
+			"1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1",
+			"4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9",
+		},
+		DownstreamStatus: http.StatusBadRequest,
+		ResponseBody:     `{"error":{"code":400,"message":"* GenerateContentRequest.generation_config.image_config.aspect_ratio: aspect_ratio must be one of '1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', or '21:9'.","status":"INVALID_ARGUMENT"}}`,
+	}
+}
+
+func TestRequestValidationRejectsInvalidAspectRatioBeforeUpstream(t *testing.T) {
+	upstreamCalls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls++
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	cfg, err := compileConfig(Config{
+		Listen:                 ":0",
+		Upstream:               upstream.URL,
+		MaxInspectBodyBytes:    1024,
+		RequestValidationRules: []RequestValidationRule{imageAspectRatioValidationRule()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &configStore{}
+	store.Store(cfg)
+	stats := &proxyStats{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := httptest.NewServer(newHandler(store, newProxy(store, stats, logger), stats, t.TempDir()+"/config.json", logger))
+	defer server.Close()
+
+	body := `{"generationConfig":{"imageConfig":{"aspectRatio":"9:10"}}}`
+	resp, err := http.Post(server.URL+"/v1beta/models/test:generateContent", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	got, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	if !strings.Contains(string(got), "aspect_ratio must be one of") {
+		t.Fatalf("unexpected rejection body: %s", got)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream received %d request(s), want 0", upstreamCalls)
+	}
+	if stats.rejectedRequests.Load() != 1 {
+		t.Fatalf("rejected requests = %d, want 1", stats.rejectedRequests.Load())
+	}
+}
+
+func TestRequestValidationAllowsValidOrMissingAspectRatio(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	cfg, err := compileConfig(Config{
+		Listen:                 ":0",
+		Upstream:               upstream.URL,
+		MaxInspectBodyBytes:    1024,
+		RequestValidationRules: []RequestValidationRule{imageAspectRatioValidationRule()},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &configStore{}
+	store.Store(cfg)
+	stats := &proxyStats{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	server := httptest.NewServer(newHandler(store, newProxy(store, stats, logger), stats, t.TempDir()+"/config.json", logger))
+	defer server.Close()
+
+	for _, body := range []string{
+		`{"generationConfig":{"imageConfig":{"aspectRatio":"9:16"}}}`,
+		`{"generationConfig":{"responseModalities":["TEXT","IMAGE"]}}`,
+	} {
+		resp, err := http.Post(server.URL+"/v1beta/models/test:generateContent", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("body %s returned status %d, want 204", body, resp.StatusCode)
+		}
+	}
+	if stats.rejectedRequests.Load() != 0 {
+		t.Fatalf("rejected requests = %d, want 0", stats.rejectedRequests.Load())
+	}
+}
+
 type countingReadCloser struct {
 	io.Reader
 	reads int

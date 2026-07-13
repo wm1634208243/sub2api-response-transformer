@@ -30,6 +30,9 @@ func (s *configStore) Store(cfg *compiledConfig) {
 
 type proxyStats struct {
 	requests          atomic.Uint64
+	inspectedRequests atomic.Uint64
+	rejectedRequests  atomic.Uint64
+	requestTooLarge   atomic.Uint64
 	inspected         atomic.Uint64
 	transformed       atomic.Uint64
 	tooLarge          atomic.Uint64
@@ -39,12 +42,15 @@ type proxyStats struct {
 
 func (s *proxyStats) snapshot() map[string]uint64 {
 	return map[string]uint64{
-		"requests":                 s.requests.Load(),
-		"inspected_responses":      s.inspected.Load(),
-		"transformed_responses":    s.transformed.Load(),
-		"skipped_body_too_large":   s.tooLarge.Load(),
-		"skipped_content_encoding": s.unsupportedCoding.Load(),
-		"proxy_errors":             s.proxyErrors.Load(),
+		"requests":                  s.requests.Load(),
+		"inspected_requests":        s.inspectedRequests.Load(),
+		"rejected_requests":         s.rejectedRequests.Load(),
+		"skipped_request_too_large": s.requestTooLarge.Load(),
+		"inspected_responses":       s.inspected.Load(),
+		"transformed_responses":     s.transformed.Load(),
+		"skipped_body_too_large":    s.tooLarge.Load(),
+		"skipped_content_encoding":  s.unsupportedCoding.Load(),
+		"proxy_errors":              s.proxyErrors.Load(),
 	}
 }
 
@@ -233,6 +239,96 @@ func (r *replayReadCloser) Close() error {
 	return r.closer.Close()
 }
 
+func validateRequest(cfg *compiledConfig, stats *proxyStats, logger *slog.Logger, w http.ResponseWriter, r *http.Request) bool {
+	if len(cfg.requestValidationRules) == 0 || r.Body == nil {
+		return false
+	}
+
+	candidates := make([]*compiledRequestValidationRule, 0, len(cfg.requestValidationRules))
+	for i := range cfg.requestValidationRules {
+		rule := &cfg.requestValidationRules[i]
+		if _, ok := rule.methodSet[strings.ToUpper(r.Method)]; !ok {
+			continue
+		}
+		if !rule.matchesRequestPath(r.URL.Path) {
+			continue
+		}
+		candidates = append(candidates, rule)
+	}
+	if len(candidates) == 0 {
+		return false
+	}
+
+	raw, complete, err := readBodyPrefix(r.Body, cfg.MaxInspectBodyBytes)
+	if err != nil {
+		logger.Warn("request_validation_read_failed", "method", r.Method, "path", r.URL.Path, "error", err)
+		http.Error(w, "invalid request body", http.StatusBadRequest)
+		return true
+	}
+	if !complete {
+		stats.requestTooLarge.Add(1)
+		r.Body = &replayReadCloser{Reader: io.MultiReader(bytes.NewReader(raw), r.Body), closer: r.Body}
+		return false
+	}
+	_ = r.Body.Close()
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+
+	decoded := decodeJSONBody(raw)
+	if decoded == nil {
+		return false
+	}
+	stats.inspectedRequests.Add(1)
+
+	for _, rule := range candidates {
+		value, exists := lookupJSONPath(decoded, rule.JSONPath)
+		if !exists && !rule.Required {
+			continue
+		}
+
+		allowed := false
+		if exists {
+			text := scalarString(value)
+			if rule.CaseInsensitive {
+				text = strings.ToLower(text)
+			}
+			_, allowed = rule.allowedSet[text]
+		}
+		if allowed {
+			continue
+		}
+
+		if cfg.EmitDebugHeader {
+			w.Header().Set("X-Request-Rejected", rule.Name)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(rule.DownstreamStatus)
+		_, _ = io.WriteString(w, rule.ResponseBody)
+		stats.rejectedRequests.Add(1)
+		logger.Info("request_rejected",
+			"rule", rule.Name,
+			"method", r.Method,
+			"path", r.URL.Path,
+			"status", rule.DownstreamStatus,
+		)
+		return true
+	}
+	return false
+}
+
+func (r *compiledRequestValidationRule) matchesRequestPath(path string) bool {
+	for _, prefix := range r.URLPathPrefixes {
+		if prefix != "" && strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	for _, value := range r.URLPathContains {
+		if value != "" && strings.Contains(path, value) {
+			return true
+		}
+	}
+	return false
+}
+
 func newHandler(store *configStore, proxy *httputil.ReverseProxy, stats *proxyStats, configPath string, logger *slog.Logger) http.Handler {
 	admin := newAdminHandler(store, configPath, logger)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -255,6 +351,9 @@ func newHandler(store *configStore, proxy *httputil.ReverseProxy, stats *proxySt
 				return
 			}
 			stats.requests.Add(1)
+			if validateRequest(cfg, stats, logger, w, r) {
+				return
+			}
 			proxy.ServeHTTP(w, r)
 		}
 	})

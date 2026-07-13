@@ -8,6 +8,20 @@
   "max_inspect_body_bytes": 1048576,
   "preserve_host": false,
   "emit_debug_header": false,
+  "request_validation_rules": [
+    {
+      "name": "validate-image-aspect-ratio",
+      "url_path_prefixes": ["/v1beta/models"],
+      "url_path_contains": [],
+      "methods": ["POST"],
+      "json_path": "generationConfig.imageConfig.aspectRatio",
+      "allowed_values": ["1:1", "1:4", "1:8", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "8:1", "9:16", "16:9", "21:9"],
+      "required": false,
+      "case_insensitive": false,
+      "downstream_status": 400,
+      "response_body": "{\"error\":{\"code\":400,\"message\":\"* GenerateContentRequest.generation_config.image_config.aspect_ratio: aspect_ratio must be one of '1:1', '1:4', '1:8', '2:3', '3:2', '3:4', '4:1', '4:3', '4:5', '5:4', '8:1', '9:16', '16:9', or '21:9'.\",\"status\":\"INVALID_ARGUMENT\"}}"
+    }
+  ],
   "rules": [
     {
       "name": "restore-451",

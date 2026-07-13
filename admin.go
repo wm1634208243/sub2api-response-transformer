@@ -169,6 +169,7 @@ const adminHTML = `<!doctype html>
     .rule-index { color: var(--accent); font-weight: 800; font-size: 12px; }
     .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .json-view { min-height: 240px; background: #09111b; color: #c9e3f4; }
+    .json-actions { display: flex; justify-content: flex-end; margin-top: 12px; }
     .empty { padding: 34px 18px; text-align: center; color: var(--muted); border: 1px dashed #36506c; border-radius: 6px; }
     .hidden { display: none !important; }
     .login-view { width: min(440px, calc(100% - 40px)); margin: 72px auto; }
@@ -221,7 +222,10 @@ const adminHTML = `<!doctype html>
     </section>
     <section class="panel">
       <div class="panel-header"><h3 class="panel-title">当前配置 JSON</h3><span class="panel-note">保存前可在此核对</span></div>
-      <div class="panel-body"><textarea id="jsonView" class="json-view" spellcheck="false" readonly></textarea></div>
+      <div class="panel-body">
+        <textarea id="jsonView" class="json-view" spellcheck="false"></textarea>
+        <div class="json-actions"><button class="primary" type="button" onclick="saveJSONConfig()">&#x5E94;&#x7528; JSON &#x5E76;&#x70ED;&#x52A0;&#x8F7D;</button></div>
+      </div>
     </section>
   </main>
 <script>
@@ -292,6 +296,7 @@ function selectField(label, key, value) { return '<label>' + label + '<select da
 function readRule(el) { const v = (k) => el.querySelector('[data-k="' + k + '"]').value; return {name:v('name'),url_path_prefixes:lines(v('url_path_prefixes')),url_path_contains:lines(v('url_path_contains')),upstream_statuses:csvNums(v('upstream_statuses')),json_paths:lines(v('json_paths')),values:lines(v('values')),message_paths:lines(v('message_paths')),message_contains:lines(v('message_contains')),body_contains:lines(v('body_contains')),case_insensitive:v('case_insensitive') === 'true',downstream_status:Number(v('downstream_status') || 500),response_template:v('response_template')}; }
 function addRule() { config = readForm(); config.rules.push({name:'restore-451',url_path_prefixes:['/v1/','/v1beta/'],url_path_contains:[],upstream_statuses:[500],json_paths:['error.code'],values:['451'],message_paths:[],message_contains:[],body_contains:[],case_insensitive:false,downstream_status:451,response_template:''}); renderRules(); showJSON(); }
 function showJSON() { if (!config) return; $('jsonView').value = JSON.stringify(readForm(), null, 2); }
+async function saveJSONConfig() { let next; try { next = JSON.parse($('jsonView').value); } catch (err) { setStatus('JSON \u683c\u5f0f\u9519\u8bef\uff1a' + err.message, true); return; } if ($('token').value) localStorage.setItem('transformer_admin_token', $('token').value); setStatus('\u6b63\u5728\u4fdd\u5b58 JSON \u914d\u7f6e...', false); const res = await fetch(endpoint(), {method:'POST',headers:headers(),body:JSON.stringify(next)}); const text = await res.text(); if (!res.ok) { setStatus(text, true); return; } const result = JSON.parse(text); config = next; fillForm(); setStatus(result.listen_change_restart ? '\u5df2\u4fdd\u5b58\u3002\u76d1\u542c\u5730\u5740\u53d8\u66f4\u540e\u9700\u91cd\u542f\u670d\u52a1\u3002' : '\u5df2\u4fdd\u5b58\u5e76\u70ed\u52a0\u8f7d\u3002', false); }
 async function saveConfig() { if (!config) { await loadConfig(); return; } if ($('token').value) localStorage.setItem('transformer_admin_token', $('token').value); setStatus('正在保存配置...', false); const res = await fetch(endpoint(), {method:'POST',headers:headers(),body:JSON.stringify(readForm())}); const text = await res.text(); if (!res.ok) { setStatus(text, true); return; } const result = JSON.parse(text); setStatus(result.listen_change_restart ? '已保存。监听地址变更后需重启服务。' : '已保存并热加载。', false); }
 function defaultConfig() { return {listen:'127.0.0.1:8888',upstream:'http://127.0.0.1:1203',health_path:'/transformer/health',stats_path:'/transformer/stats',admin_path:'/transformer/admin',max_inspect_body_bytes:1048576,preserve_host:false,emit_debug_header:false,rules:[]}; }
 function esc(value) { return String(value).replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
