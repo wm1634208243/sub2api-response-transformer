@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -25,7 +26,8 @@ func (h *adminHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	suffix := strings.TrimPrefix(r.URL.Path, cfg.AdminPath)
 	if suffix == "" || suffix == "/" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(w, adminHTML)
+		html := strings.Replace(adminHTML, "__AUTH_REQUIRED__", strconv.FormatBool(cfg.AdminToken != ""), 1)
+		_, _ = io.WriteString(w, html)
 		return
 	}
 	if suffix != "/api/config" {
@@ -168,6 +170,14 @@ const adminHTML = `<!doctype html>
     .hint { color: var(--muted); font-size: 12px; line-height: 1.5; }
     .json-view { min-height: 240px; background: #09111b; color: #c9e3f4; }
     .empty { padding: 34px 18px; text-align: center; color: var(--muted); border: 1px dashed #36506c; border-radius: 6px; }
+    .hidden { display: none !important; }
+    .login-view { width: min(440px, calc(100% - 40px)); margin: 72px auto; }
+    .login-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+    .login-card .panel-body { display: grid; gap: 14px; }
+    .login-card h2 { margin: 0; font-size: 20px; }
+    .login-card p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
+    .login-card .token { width: 100%; max-width: none; }
+    .login-status { min-height: 20px; color: var(--muted); font-size: 13px; }
     @media (max-width: 900px) { header { padding: 12px 18px; flex-wrap: wrap; } .token { order: 3; width: 100%; max-width: none; } main { width: min(100% - 28px, 700px); margin-top: 20px; } .grid, .rule-grid { grid-template-columns: 1fr 1fr; } .two { grid-column: span 2; } }
     @media (max-width: 600px) { .brand p { display: none; } .page-title { display: block; } .status { text-align: left; margin-top: 10px; } .grid, .rule-grid { grid-template-columns: 1fr; } .two, .wide { grid-column: auto; } .panel-body { padding: 14px; } header .actions { width: 100%; } header .actions button { flex: 1; } }
   </style>
@@ -176,9 +186,20 @@ const adminHTML = `<!doctype html>
   <header>
     <div class="brand"><div class="brand-mark">RT</div><div><h1>Response Transformer</h1><p>Sub2API 响应状态转换代理</p></div></div>
     <input id="token" class="token" type="password" placeholder="管理令牌">
-    <div class="actions"><button class="outline" type="button" onclick="loadConfig()">加载配置</button><button class="primary" type="button" onclick="saveConfig()">保存并热加载</button></div>
+    <div id="topActions" class="actions"><button class="outline" type="button" onclick="loadConfig()">加载配置</button><button class="primary" type="button" onclick="saveConfig()">保存并热加载</button></div>
   </header>
-  <main>
+  <section id="loginView" class="login-view hidden">
+    <div class="login-card">
+      <div class="panel-header"><h2>请输入管理令牌</h2></div>
+      <div class="panel-body">
+        <p>当前管理 API 已启用令牌保护。验证通过后才会加载和显示配置。</p>
+        <input id="loginToken" class="token" type="password" placeholder="管理令牌" autocomplete="current-password">
+        <button class="primary" type="button" onclick="login()">进入管理</button>
+        <div id="loginStatus" class="login-status" aria-live="polite"></div>
+      </div>
+    </div>
+  </section>
+  <main id="appView" class="hidden">
     <div class="page-title"><div><h2>代理配置</h2><p>配置上游连接与响应状态转换规则。</p></div><div id="status" class="status" aria-live="polite"></div></div>
     <section class="panel">
       <div class="panel-header"><h3 class="panel-title">服务设置</h3><span class="panel-note">修改监听地址后需要重启服务</span></div>
@@ -205,6 +226,7 @@ const adminHTML = `<!doctype html>
   </main>
 <script>
 let config = null;
+const authRequired = __AUTH_REQUIRED__;
 const $ = (id) => document.getElementById(id);
 const lines = (value) => String(value || '').split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
 const csvNums = (value) => String(value || '').split(/[,\s]+/).map((s) => s.trim()).filter(Boolean).map(Number).filter(Number.isFinite);
@@ -212,13 +234,29 @@ const bool = (id) => $(id).value === 'true';
 const token = () => $('token').value || localStorage.getItem('transformer_admin_token') || '';
 function headers() { const h = {'Content-Type': 'application/json'}; if (token()) h['X-Admin-Token'] = token(); return h; }
 function setStatus(message, bad) { $('status').textContent = message; $('status').style.color = bad ? '#ff9b9b' : '#9cb0c8'; }
+function setLoginStatus(message, bad) { $('loginStatus').textContent = message; $('loginStatus').style.color = bad ? '#ff9b9b' : '#9cb0c8'; }
 function endpoint() { return location.pathname.replace(/\/$/, '') + '/api/config'; }
+function showLogin() { $('loginView').classList.remove('hidden'); $('appView').classList.add('hidden'); $('topActions').classList.add('hidden'); $('token').classList.add('hidden'); }
+function showApp() { $('loginView').classList.add('hidden'); $('appView').classList.remove('hidden'); $('topActions').classList.remove('hidden'); $('token').classList.remove('hidden'); }
+async function login() { $('token').value = $('loginToken').value; if (!$('token').value) { setLoginStatus('请输入管理令牌。', true); return; } setLoginStatus('正在验证...', false); await loadConfig(); }
 async function loadConfig() {
   if ($('token').value) localStorage.setItem('transformer_admin_token', $('token').value);
   setStatus('正在加载配置...', false);
   const res = await fetch(endpoint(), {headers: headers()});
-  if (!res.ok) { setStatus(await res.text(), true); return; }
-  config = await res.json(); fillForm(); setStatus('配置已加载', false);
+  if (!res.ok) {
+    const text = await res.text();
+    if (authRequired) {
+      showLogin();
+      setLoginStatus(res.status === 401 ? '管理令牌不正确。' : text, true);
+    }
+    setStatus(text, true);
+    return;
+  }
+  config = await res.json();
+  fillForm();
+  showApp();
+  setLoginStatus('', false);
+  setStatus('配置已加载', false);
 }
 function fillForm() {
   for (const key of ['listen','upstream','health_path','stats_path','admin_path','admin_token','max_inspect_body_bytes']) $(key).value = config[key] ?? '';
@@ -257,7 +295,13 @@ function showJSON() { if (!config) return; $('jsonView').value = JSON.stringify(
 async function saveConfig() { if (!config) { await loadConfig(); return; } if ($('token').value) localStorage.setItem('transformer_admin_token', $('token').value); setStatus('正在保存配置...', false); const res = await fetch(endpoint(), {method:'POST',headers:headers(),body:JSON.stringify(readForm())}); const text = await res.text(); if (!res.ok) { setStatus(text, true); return; } const result = JSON.parse(text); setStatus(result.listen_change_restart ? '已保存。监听地址变更后需重启服务。' : '已保存并热加载。', false); }
 function defaultConfig() { return {listen:'127.0.0.1:8888',upstream:'http://127.0.0.1:1203',health_path:'/transformer/health',stats_path:'/transformer/stats',admin_path:'/transformer/admin',max_inspect_body_bytes:1048576,preserve_host:false,emit_debug_header:false,rules:[]}; }
 function esc(value) { return String(value).replace(/[&<>"']/g, (char) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
-loadConfig().catch((err) => setStatus(String(err), true));
+if (authRequired) {
+  showLogin();
+  $('loginToken').addEventListener('keydown', (event) => { if (event.key === 'Enter') login(); });
+} else {
+  showApp();
+  loadConfig().catch((err) => setStatus(String(err), true));
+}
 </script>
 </body>
 </html>`

@@ -260,6 +260,33 @@ func TestGzipBodyCanMatchWithoutChangingCompressedBytes(t *testing.T) {
 	}
 }
 
+func TestAdminPageReflectsAuthRequirement(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	cfgWithToken, err := compileConfig(Config{Listen: ":0", Upstream: "http://127.0.0.1:9999", AdminToken: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeWithToken := &configStore{}
+	storeWithToken.Store(cfgWithToken)
+	withToken := httptest.NewRecorder()
+	newAdminHandler(storeWithToken, t.TempDir()+"/config.json", logger).ServeHTTP(withToken, httptest.NewRequest(http.MethodGet, cfgWithToken.AdminPath, nil))
+	if !strings.Contains(withToken.Body.String(), "const authRequired = true;") {
+		t.Fatalf("admin page did not require auth: %s", withToken.Body.String())
+	}
+
+	cfgWithoutToken, err := compileConfig(Config{Listen: ":0", Upstream: "http://127.0.0.1:9999"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	storeWithoutToken := &configStore{}
+	storeWithoutToken.Store(cfgWithoutToken)
+	withoutToken := httptest.NewRecorder()
+	newAdminHandler(storeWithoutToken, t.TempDir()+"/config.json", logger).ServeHTTP(withoutToken, httptest.NewRequest(http.MethodGet, cfgWithoutToken.AdminPath, nil))
+	if !strings.Contains(withoutToken.Body.String(), "const authRequired = false;") {
+		t.Fatalf("admin page should allow direct load: %s", withoutToken.Body.String())
+	}
+}
 func TestProxyIntegration(t *testing.T) {
 	body := []byte(`{"code":400,"message":"invalid parameter","data":{"field":"model"}}`)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
